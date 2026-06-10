@@ -1,0 +1,25 @@
+.DS_Store
+.venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+.mise.local.toml
+node_modules/
+claude-code/
+doc/
+architecture/
+CLAUDE.md
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Local IDE / agent settings
+.claude/
+
+# Personal files (not part of project)
+/*.pdf
+/Screenshot*.png

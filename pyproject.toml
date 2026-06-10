@@ -1,0 +1,78 @@
+[project]
+name = "kagent-ai"
+version = "0.1.0"
+description = "Provider-agnostic agentic coding CLI for Gemini, OpenAI, and OpenAI-compatible LLMs"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Kien Tran", email = "141387132+KienTranDSAI@users.noreply.github.com" },
+]
+keywords = ["agent", "llm", "ai", "cli", "coding-assistant", "gemini", "openai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "google-genai>=1.0.0",
+    "openai>=1.50.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+    "questionary>=2.0.0",
+    "pypdf>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+kagent = "kagent.cli:main_sync"
+
+[project.urls]
+Homepage = "https://github.com/KienTranDSAI/kagent"
+Repository = "https://github.com/KienTranDSAI/kagent"
+Issues = "https://github.com/KienTranDSAI/kagent/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kagent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/kagent",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
+exclude = [
+    "/.env",
+    "/.venv",
+    "/__pycache__",
+    "/.pytest_cache",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
