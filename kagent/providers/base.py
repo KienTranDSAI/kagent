@@ -71,6 +71,13 @@ class LLMProvider(ABC):
         """Provider has native PDF/document content type."""
         return False
 
+    async def list_models(self) -> list[str]:
+        """Tên các model khả dụng từ API (cho /model picker).
+
+        Default: rỗng = provider không hỗ trợ liệt kê.
+        """
+        return []
+
     @property
     def supports_image(self) -> bool:
         """Provider can receive inline image content (base64)."""

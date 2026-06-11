@@ -57,6 +57,11 @@ class OpenAIProvider(LLMProvider):
         # OpenAI Chat API doesn't have document content type — PDF only via image fallback (pdftoppm).
         return False
 
+    async def list_models(self) -> list[str]:
+        """Model khả dụng từ /v1/models — vLLM/sglang/LiteLLM đều hỗ trợ."""
+        page = await self.client.models.list()
+        return [m.id for m in page.data]
+
     async def chat(self, messages, tools=None, system_prompt=None):
         api_messages = self._build_messages(messages, system_prompt)
         kwargs: dict = {"model": self.model, "messages": api_messages}

@@ -20,6 +20,15 @@ class GeminiProvider(LLMProvider):
     def supports_image(self) -> bool:
         return True
 
+    async def list_models(self) -> list[str]:
+        """Model chat-capable từ models.list (chỉ giữ generateContent)."""
+        names: list[str] = []
+        async for m in await self.client.aio.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            if "generateContent" in actions:
+                names.append((m.name or "").removeprefix("models/"))
+        return names
+
     async def chat(self, messages, tools=None, system_prompt=None):
         contents = self.format_messages(messages)
 
