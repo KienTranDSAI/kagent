@@ -6,6 +6,7 @@ from kagent.commands.base import Command
 from kagent.conversation import (
     estimate_messages_tokens,
     get_context_window,
+    resolve_context_tokens,
     micro_compact,
     compact_conversation,
     new_session_id,
@@ -41,13 +42,16 @@ class CostCommand(Command):
 
 class TokensCommand(Command):
     name = "tokens"
-    description = "Show current context size estimate"
+    description = "Show current context size (real API count khi có)"
 
     async def execute(self, args, ctx):
-        est = estimate_messages_tokens(ctx.messages)
+        tokens, source = resolve_context_tokens(ctx.messages, ctx.context_tracker)
         ctx_window = get_context_window(ctx.model)
-        pct = (est / ctx_window) * 100 if ctx_window else 0
-        console.print(f"[bold]Context:[/] ~{est:,} / {ctx_window:,} ({pct:.1f}%)")
+        pct = (tokens / ctx_window) * 100 if ctx_window else 0
+        label = "API usage (chính xác)" if source == "api" else "heuristic (ước lượng)"
+        console.print(
+            f"[bold]Context:[/] ~{tokens:,} / {ctx_window:,} ({pct:.1f}%) [dim]— nguồn: {label}[/]"
+        )
 
 
 class MicroCompactCommand(Command):
@@ -59,6 +63,9 @@ class MicroCompactCommand(Command):
         ctx.messages[:] = micro_compact(ctx.messages)
         after = estimate_messages_tokens(ctx.messages)
         console.print(f"[green]micro-compact:[/] {before:,} → {after:,} tokens")
+        # context đổi → số API cũ stale, fallback heuristic tới lần gọi sau
+        if ctx.context_tracker is not None:
+            ctx.context_tracker.reset()
 
 
 class CompactCommand(Command):
@@ -71,6 +78,9 @@ class CompactCommand(Command):
         ctx.messages[:] = await compact_conversation(ctx.messages, ctx.provider)
         after = estimate_messages_tokens(ctx.messages)
         console.print(f"[green]compact:[/] {before:,} → {after:,} tokens")
+        # context đổi → số API cũ stale, fallback heuristic tới lần gọi sau
+        if ctx.context_tracker is not None:
+            ctx.context_tracker.reset()
 
 
 class ClearCommand(Command):
@@ -80,6 +90,8 @@ class ClearCommand(Command):
     async def execute(self, args, ctx):
         ctx.messages.clear()
         console.print("[green]Conversation cleared.[/]")
+        if ctx.context_tracker is not None:
+            ctx.context_tracker.reset()
 
 
 class SessionsCommand(Command):
@@ -116,6 +128,8 @@ class ResumeCommand(Command):
         ctx.messages.extend(loaded)
         ctx.session_id_ref[0] = args
         console.print(f"[green]Resumed:[/] {args} ({len(loaded)} messages)")
+        if ctx.context_tracker is not None:
+            ctx.context_tracker.reset()
 
 
 class NewSessionCommand(Command):
@@ -126,6 +140,8 @@ class NewSessionCommand(Command):
         ctx.messages.clear()
         ctx.session_id_ref[0] = new_session_id()
         console.print(f"[green]New session:[/] {ctx.session_id_ref[0]}")
+        if ctx.context_tracker is not None:
+            ctx.context_tracker.reset()
 
 
 class SaveCommand(Command):

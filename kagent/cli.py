@@ -17,6 +17,7 @@ from kagent.engine import agent_loop
 from kagent.permissions import PermissionChecker, PermissionMode
 from kagent.conversation import (
     CostTracker,
+    ContextTracker,
     new_session_id,
     save_session,
     load_session,
@@ -90,6 +91,7 @@ async def main():
     cmd_registry = create_command_registry()
 
     cost_tracker = CostTracker(model=model)
+    context_tracker = ContextTracker()
     memory = MemoryManager()
 
     messages: list[dict] = []
@@ -119,6 +121,7 @@ async def main():
         provider_name=LLM_PROVIDER,
         memory=memory,
         permission_checker=permission_checker,
+        context_tracker=context_tracker,
     )
 
     print_welcome(
@@ -171,6 +174,7 @@ async def main():
                 permission_checker=permission_checker,
                 cost_tracker=cost_tracker,
                 model=model,
+                context_tracker=context_tracker,
             )
             messages.append({"role": "assistant", "content": response_text})
             save_session(

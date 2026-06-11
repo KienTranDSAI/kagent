@@ -27,6 +27,7 @@ class CommandContext:
     provider_name: str
     memory: object              # MemoryManager
     permission_checker: object = None  # PermissionChecker (cho /plan)
+    context_tracker: object = None     # ContextTracker — real token count của main loop
 
 
 class Command(ABC):

@@ -27,6 +27,8 @@ from kagent.conversation import (
     micro_compact,
     compact_conversation,
     CostTracker,
+    ContextTracker,
+    resolve_context_tokens,
 )
 from kagent.ui.terminal import (
     console,
@@ -60,6 +62,7 @@ async def agent_loop(
     permission_checker: PermissionChecker | None = None,
     cost_tracker: CostTracker | None = None,
     model: str | None = None,
+    context_tracker: ContextTracker | None = None,
 ) -> str:
     """Core agentic loop: streaming UI + auto-compact + cost tracking + parallel tools."""
     if system_prompt is None:
@@ -83,11 +86,13 @@ async def agent_loop(
         if turn > MAX_TURNS:
             return "[Reached maximum turns limit. Stopping.]"
 
-        # Auto-compact check
-        estimated = estimate_messages_tokens(messages)
-        if estimated > threshold:
-            print_info(f"[auto-compact] {estimated:,} > {threshold:,} — tier 1")
+        # Auto-compact check — ưu tiên usage THẬT từ API call gần nhất
+        current, source = resolve_context_tokens(messages, context_tracker)
+        if current > threshold:
+            print_info(f"[auto-compact] {current:,} ({source}) > {threshold:,} — tier 1")
             messages[:] = micro_compact(messages)
+            if context_tracker is not None:
+                context_tracker.reset()  # context đã đổi → số API cũ stale
             after = estimate_messages_tokens(messages)
             print_info(f"[auto-compact] tier 1: {after:,} tokens")
             if after > threshold:
@@ -113,11 +118,16 @@ async def agent_loop(
                     tool_calls.append(event["call"])
                 elif event["type"] == "finish":
                     finish_reason = event["reason"]
-                elif event["type"] == "usage" and cost_tracker is not None:
-                    cost_tracker.add(
-                        input_tokens=event["input_tokens"],
-                        output_tokens=event["output_tokens"],
-                    )
+                elif event["type"] == "usage":
+                    if cost_tracker is not None:
+                        cost_tracker.add(
+                            input_tokens=event["input_tokens"],
+                            output_tokens=event["output_tokens"],
+                        )
+                    if context_tracker is not None:
+                        context_tracker.update(
+                            event["input_tokens"], event["output_tokens"]
+                        )
 
         if text_acc:
             console.print(Markdown(text_acc))

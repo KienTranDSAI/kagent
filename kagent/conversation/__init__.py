@@ -3,6 +3,8 @@ from kagent.conversation.tokens import (
     estimate_messages_tokens,
     CONTEXT_WINDOWS,
     get_context_window,
+    ContextTracker,
+    resolve_context_tokens,
 )
 from kagent.conversation.compact import micro_compact, compact_conversation
 from kagent.conversation.history import (
