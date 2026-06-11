@@ -1,6 +1,7 @@
 import fnmatch
 from typing import TYPE_CHECKING
 from kagent.permissions.types import PermissionMode, PermissionDecision, PermissionRule
+from kagent.ui.diff_preview import show_permission_preview
 from kagent.ui.interrupt import esc_watcher
 from kagent.ui.terminal import SYNC_PROMPT_ACTIVE
 
@@ -110,6 +111,9 @@ class PermissionChecker:
             print(f"    Command: {args.get('command', '')}")
         elif tool.name in ("Edit", "Write", "Read"):
             print(f"    File: {args.get('file_path', '')}")
+
+        # Diff preview cho Edit/Write — thấy thay đổi trước khi quyết định
+        show_permission_preview(tool.name, args)
 
         while True:
             try:
