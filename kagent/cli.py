@@ -219,7 +219,7 @@ async def main():
             registry=tool_registry,
             permission_checker=permission_checker,
             cost_tracker=cost_tracker,
-            model=model,
+            model=cmd_ctx.model,  # /model có thể đã đổi — cmd_ctx là source of truth
             context_tracker=context_tracker,
         ))
         turn_task_ref[0] = turn_task
@@ -230,7 +230,7 @@ async def main():
             save_session(
                 session_id_ref[0],
                 messages,
-                metadata={"model": model, "provider": LLM_PROVIDER},
+                metadata={"model": cmd_ctx.model, "provider": LLM_PROVIDER},
             )
             console.print()
         except asyncio.CancelledError:
@@ -238,7 +238,7 @@ async def main():
             save_session(  # giữ partial conversation (engine đã seal hợp lệ)
                 session_id_ref[0],
                 messages,
-                metadata={"model": model, "provider": LLM_PROVIDER},
+                metadata={"model": cmd_ctx.model, "provider": LLM_PROVIDER},
             )
         except Exception as e:
             print_error(str(e))

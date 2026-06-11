@@ -18,6 +18,7 @@ from kagent.commands.memory import RememberCommand, MemoryCommand, ForgetCommand
 from kagent.commands.todo import TodosCommand
 from kagent.commands.plan import PlanCommand
 from kagent.commands.mode import ModeCommand
+from kagent.commands.model import ModelCommand
 
 
 def create_default_registry() -> CommandRegistry:
@@ -54,6 +55,9 @@ def create_default_registry() -> CommandRegistry:
     # Plan Mode
     reg.register(PlanCommand())
     reg.register(ModeCommand())
+
+    # Model switch (cùng provider)
+    reg.register(ModelCommand())
 
     # Exit
     reg.register(ExitCommand())
