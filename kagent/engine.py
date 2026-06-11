@@ -53,6 +53,11 @@ NORMAL_FINISH_REASONS = {
     "end_turn", "tool_use",
 }
 
+# Claude Code equivalent: utils/messages.ts:207-208
+# (INTERRUPT_MESSAGE / INTERRUPT_MESSAGE_FOR_TOOL_USE)
+INTERRUPT_NOTICE = "[Request interrupted by user]"
+INTERRUPT_TOOL_NOTICE = "[Tool call interrupted by user before completion]"
+
 
 async def agent_loop(
     messages: list[dict],
@@ -81,91 +86,141 @@ async def agent_loop(
     context_window = get_context_window(model or "")
     threshold = context_window - AUTOCOMPACT_BUFFER - OUTPUT_RESERVE
 
-    while True:
-        turn += 1
-        if turn > MAX_TURNS:
-            return "[Reached maximum turns limit. Stopping.]"
+    # Hoist text_acc trước try — except CancelledError cần đọc partial text
+    # của iteration đang dở (mỗi iteration vẫn tự reset bên dưới).
+    text_acc = ""
+    try:
+        while True:
+            turn += 1
+            if turn > MAX_TURNS:
+                return "[Reached maximum turns limit. Stopping.]"
 
-        # Auto-compact check — ưu tiên usage THẬT từ API call gần nhất
-        current, source = resolve_context_tokens(messages, context_tracker)
-        if current > threshold:
-            print_info(f"[auto-compact] {current:,} ({source}) > {threshold:,} — tier 1")
-            messages[:] = micro_compact(messages)
-            if context_tracker is not None:
-                context_tracker.reset()  # context đã đổi → số API cũ stale
-            after = estimate_messages_tokens(messages)
-            print_info(f"[auto-compact] tier 1: {after:,} tokens")
-            if after > threshold:
-                print_info("[auto-compact] tier 3 (LLM summary)...")
-                messages[:] = await compact_conversation(messages, provider)
-                print_info(f"[auto-compact] tier 3: {estimate_messages_tokens(messages):,} tokens")
+            # Auto-compact check — ưu tiên usage THẬT từ API call gần nhất
+            current, source = resolve_context_tokens(messages, context_tracker)
+            if current > threshold:
+                print_info(f"[auto-compact] {current:,} ({source}) > {threshold:,} — tier 1")
+                messages[:] = micro_compact(messages)
+                if context_tracker is not None:
+                    context_tracker.reset()  # context đã đổi → số API cũ stale
+                after = estimate_messages_tokens(messages)
+                print_info(f"[auto-compact] tier 1: {after:,} tokens")
+                if after > threshold:
+                    print_info("[auto-compact] tier 3 (LLM summary)...")
+                    messages[:] = await compact_conversation(messages, provider)
+                    print_info(f"[auto-compact] tier 3: {estimate_messages_tokens(messages):,} tokens")
 
-        # Stream response — Live(Text) tránh re-flow markdown lúc stream,
-        # transient=True để xóa vùng stream khi xong, rồi render Markdown 1 lần ở cuối.
-        text_acc = ""
-        tool_calls: list[ToolCall] = []
-        finish_reason: str | None = None
-        with Live(Text(""), console=console, refresh_per_second=10, transient=True) as live:
-            async for event in provider.stream_chat(
-                messages=messages,
-                tools=tool_schemas if registry.all_tools() else None,
-                system_prompt=system_prompt,
-            ):
-                if event["type"] == "text":
-                    text_acc += event["delta"]
-                    live.update(Text(text_acc))
-                elif event["type"] == "tool_call":
-                    tool_calls.append(event["call"])
-                elif event["type"] == "finish":
-                    finish_reason = event["reason"]
-                elif event["type"] == "usage":
-                    if cost_tracker is not None:
-                        cost_tracker.add(
-                            input_tokens=event["input_tokens"],
-                            output_tokens=event["output_tokens"],
-                        )
-                    if context_tracker is not None:
-                        context_tracker.update(
-                            event["input_tokens"], event["output_tokens"]
-                        )
+            # Stream response — Live(Text) tránh re-flow markdown lúc stream,
+            # transient=True để xóa vùng stream khi xong, rồi render Markdown 1 lần ở cuối.
+            text_acc = ""
+            tool_calls: list[ToolCall] = []
+            finish_reason: str | None = None
+            with Live(Text(""), console=console, refresh_per_second=10, transient=True) as live:
+                async for event in provider.stream_chat(
+                    messages=messages,
+                    tools=tool_schemas if registry.all_tools() else None,
+                    system_prompt=system_prompt,
+                ):
+                    if event["type"] == "text":
+                        text_acc += event["delta"]
+                        live.update(Text(text_acc))
+                    elif event["type"] == "tool_call":
+                        tool_calls.append(event["call"])
+                    elif event["type"] == "finish":
+                        finish_reason = event["reason"]
+                    elif event["type"] == "usage":
+                        if cost_tracker is not None:
+                            cost_tracker.add(
+                                input_tokens=event["input_tokens"],
+                                output_tokens=event["output_tokens"],
+                            )
+                        if context_tracker is not None:
+                            context_tracker.update(
+                                event["input_tokens"], event["output_tokens"]
+                            )
 
-        if text_acc:
-            console.print(Markdown(text_acc))
+            if text_acc:
+                console.print(Markdown(text_acc))
 
-        if finish_reason and finish_reason not in NORMAL_FINISH_REASONS:
-            print_info(f"[finish_reason] {finish_reason}")
+            if finish_reason and finish_reason not in NORMAL_FINISH_REASONS:
+                print_info(f"[finish_reason] {finish_reason}")
 
-        if not tool_calls:
-            return text_acc
+            if not tool_calls:
+                return text_acc
 
-        # Save assistant message with tool_calls
-        assistant_msg: dict = {"role": "assistant"}
-        if text_acc:
-            assistant_msg["text"] = text_acc
-        assistant_msg["tool_calls"] = [
-            {
-                "id": tc.id,
-                "name": tc.name,
-                "args": tc.args,
-                "provider_metadata": tc.provider_metadata,
-            }
-            for tc in tool_calls
-        ]
-        messages.append(assistant_msg)
+            # Save assistant message with tool_calls
+            assistant_msg: dict = {"role": "assistant"}
+            if text_acc:
+                assistant_msg["text"] = text_acc
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "args": tc.args,
+                    "provider_metadata": tc.provider_metadata,
+                }
+                for tc in tool_calls
+            ]
+            messages.append(assistant_msg)
 
-        # Execute all tool_calls (batched parallel) then append results
-        results = await _execute_tool_calls(
-            tool_calls=tool_calls,
-            registry=registry,
-            context=context,
-            permission_checker=permission_checker,
-        )
-        for tc, result in zip(tool_calls, results):
-            formatted = provider.format_tool_result(tc, result)
+            # Execute all tool_calls (batched parallel) then append results
+            results = await _execute_tool_calls(
+                tool_calls=tool_calls,
+                registry=registry,
+                context=context,
+                permission_checker=permission_checker,
+            )
+            for tc, result in zip(tool_calls, results):
+                formatted = provider.format_tool_result(tc, result)
+                if isinstance(formatted, list):
+                    messages.extend(formatted)
+                else:
+                    messages.append(formatted)
+
+            # Text của iteration này đã nằm trong assistant_msg["text"] —
+            # xóa để cancel trong auto-compact đầu iteration sau không seal trùng.
+            text_acc = ""
+    except asyncio.CancelledError:
+        # User interrupt (ESC/Ctrl+C): đưa history về trạng thái hợp lệ
+        # rồi re-raise — nuốt CancelledError là bug (task zombie).
+        # REPL là nơi quyết định hiển thị gì cho user.
+        seal_interrupted_messages(messages, provider, partial_text=text_acc)
+        raise
+
+
+def seal_interrupted_messages(
+    messages: list[dict],
+    provider: LLMProvider,
+    partial_text: str = "",
+) -> None:
+    """Đưa history về trạng thái hợp lệ sau khi turn bị cancel.
+
+    Case 1 — cancel giữa tool execution: message cuối là assistant có
+    tool_calls nhưng chưa có results → append synthetic result cho TỪNG
+    call (API reject history có tool call lủng lẳng — OpenAI 400,
+    Gemini cũng reject functionCall thiếu functionResponse).
+    Case 2 — cancel giữa stream: chưa append gì; nếu có partial text thì
+    giữ lại làm assistant message (không mất chữ user đã đọc).
+    """
+    if messages and messages[-1].get("role") == "assistant" and "tool_calls" in messages[-1]:
+        for tc in messages[-1]["tool_calls"]:
+            call = ToolCall(
+                id=tc["id"],
+                name=tc["name"],
+                args=tc.get("args", {}),
+                provider_metadata=tc.get("provider_metadata") or {},
+            )
+            formatted = provider.format_tool_result(call, INTERRUPT_TOOL_NOTICE)
             if isinstance(formatted, list):
                 messages.extend(formatted)
             else:
                 messages.append(formatted)
+        return
+
+    if partial_text:
+        messages.append({
+            "role": "assistant",
+            "content": f"{partial_text}\n\n{INTERRUPT_NOTICE}",
+        })
 
 
 async def _execute_tool_calls(

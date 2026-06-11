@@ -8,6 +8,7 @@ import questionary
 from prompt_toolkit.styles import Style
 
 from kagent.tools.base import Tool, ToolResult, ToolContext
+from kagent.ui.interrupt import esc_watcher
 from kagent.ui.terminal import console
 
 
@@ -125,53 +126,59 @@ class AskUserQuestionTool(Tool):
         console.print(f"\n[cyan]┌─[/] [bold cyan]{chip}[/]")
         console.print(f"[bold]{question}[/]\n")
 
+        # questionary (prompt_toolkit raw mode) cần độc quyền stdin —
+        # pause ESC watcher suốt block prompt, kể cả phần "Other" free text.
+        esc_watcher.pause()
         try:
+            try:
+                if multi_select:
+                    picked = await questionary.checkbox(
+                        "Select one or more (space to toggle, enter to confirm):",
+                        choices=choices,
+                        style=_QUESTIONARY_STYLE,
+                    ).ask_async()
+                else:
+                    picked = await questionary.select(
+                        "Choose:",
+                        choices=choices,
+                        style=_QUESTIONARY_STYLE,
+                    ).ask_async()
+            except Exception as e:
+                return ToolResult(
+                    output="",
+                    error=f"Prompt failed: {e}",
+                    is_error=True,
+                )
+
+            if picked is None or (isinstance(picked, list) and len(picked) == 0):
+                return ToolResult(
+                    output="[User cancelled the question without answering]",
+                    is_error=True,
+                )
+
+            # Resolve "Other" → free text
             if multi_select:
-                picked = await questionary.checkbox(
-                    "Select one or more (space to toggle, enter to confirm):",
-                    choices=choices,
-                    style=_QUESTIONARY_STYLE,
-                ).ask_async()
+                assert isinstance(picked, list)
+                if _OTHER_SENTINEL in picked:
+                    picked = [p for p in picked if p != _OTHER_SENTINEL]
+                    custom = await questionary.text(
+                        "Your custom answer:", style=_QUESTIONARY_STYLE
+                    ).ask_async()
+                    if custom:
+                        picked.append(custom.strip())
             else:
-                picked = await questionary.select(
-                    "Choose:",
-                    choices=choices,
-                    style=_QUESTIONARY_STYLE,
-                ).ask_async()
-        except Exception as e:
-            return ToolResult(
-                output="",
-                error=f"Prompt failed: {e}",
-                is_error=True,
-            )
-
-        if picked is None or (isinstance(picked, list) and len(picked) == 0):
-            return ToolResult(
-                output="[User cancelled the question without answering]",
-                is_error=True,
-            )
-
-        # Resolve "Other" → free text
-        if multi_select:
-            assert isinstance(picked, list)
-            if _OTHER_SENTINEL in picked:
-                picked = [p for p in picked if p != _OTHER_SENTINEL]
-                custom = await questionary.text(
-                    "Your custom answer:", style=_QUESTIONARY_STYLE
-                ).ask_async()
-                if custom:
-                    picked.append(custom.strip())
-        else:
-            if picked == _OTHER_SENTINEL:
-                custom = await questionary.text(
-                    "Your custom answer:", style=_QUESTIONARY_STYLE
-                ).ask_async()
-                if custom is None or not custom.strip():
-                    return ToolResult(
-                        output="[User cancelled the custom answer]",
-                        is_error=True,
-                    )
-                picked = custom.strip()
+                if picked == _OTHER_SENTINEL:
+                    custom = await questionary.text(
+                        "Your custom answer:", style=_QUESTIONARY_STYLE
+                    ).ask_async()
+                    if custom is None or not custom.strip():
+                        return ToolResult(
+                            output="[User cancelled the custom answer]",
+                            is_error=True,
+                        )
+                    picked = custom.strip()
+        finally:
+            esc_watcher.resume()
 
         answer_str = ", ".join(picked) if isinstance(picked, list) else picked
         return ToolResult(

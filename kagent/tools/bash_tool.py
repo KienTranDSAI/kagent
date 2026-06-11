@@ -1,6 +1,23 @@
 import asyncio
 import os
+import signal
 from kagent.tools.base import Tool, ToolResult, ToolContext
+
+
+def _kill_process_group(proc) -> None:
+    """Kill cả process group — proc là `sh -c`, lệnh thật là CON của nó.
+
+    proc.kill() một mình chỉ giết shell, để lại orphan (vd `sleep 30`
+    vẫn chạy sau khi user đã ESC). Cần start_new_session=True khi spawn
+    để killpg không trúng chính kagent.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
 
 class BashTool(Tool):
@@ -55,6 +72,7 @@ class BashTool(Tool):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=context.cwd,
                 env={**os.environ},  # Inherit environment
+                start_new_session=True,  # group riêng → kill được cả cây process
             )
 
             try:
@@ -63,13 +81,18 @@ class BashTool(Tool):
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
+                _kill_process_group(proc)
                 await proc.wait()
                 return ToolResult(
                     output="",
                     error=f"Command timed out after {timeout}s",
                     is_error=True,
                 )
+            except asyncio.CancelledError:
+                # User interrupt (ESC/Ctrl+C) — kill kẻo subprocess mồ côi
+                _kill_process_group(proc)
+                await proc.wait()
+                raise
 
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")

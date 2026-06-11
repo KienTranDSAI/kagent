@@ -16,6 +16,7 @@ from rich.markdown import Markdown
 from kagent.tools.base import Tool, ToolResult, ToolContext
 from kagent.permissions.checker import PermissionChecker
 from kagent.permissions.types import PermissionMode
+from kagent.ui.interrupt import esc_watcher
 from kagent.ui.terminal import console
 
 
@@ -131,6 +132,8 @@ class ExitPlanModeTool(Tool):
         console.print(Markdown(plan_text))
         console.print()
 
+        # questionary cần độc quyền stdin — pause ESC watcher trong lúc prompt.
+        esc_watcher.pause()
         try:
             choice = await questionary.select(
                 "Approve plan?",
@@ -142,6 +145,8 @@ class ExitPlanModeTool(Tool):
             ).ask_async()
         except Exception as e:
             return ToolResult(output="", error=f"Prompt failed: {e}", is_error=True)
+        finally:
+            esc_watcher.resume()
 
         if choice is None or choice == "reject":
             console.print("[yellow]Plan rejected — staying in Plan Mode.[/]\n")

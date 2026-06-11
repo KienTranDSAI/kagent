@@ -15,6 +15,12 @@ from rich.text import Text
 
 console = Console()
 
+# Flag: đang block trong SYNC input prompt (permission prompt).
+# SIGINT handler đọc flag này để biết phải raise KeyboardInterrupt
+# phá input() (task.cancel() không phá được sync call đang block).
+# List-of-1 trick giống session_id_ref — mutable qua module reference.
+SYNC_PROMPT_ACTIVE = [False]
+
 
 def print_welcome(provider: str, model: str, tools: list[str], cwd: str, perm_mode: str):
     """Welcome panel hiển thị lúc start."""

@@ -1,6 +1,8 @@
 import fnmatch
 from typing import TYPE_CHECKING
 from kagent.permissions.types import PermissionMode, PermissionDecision, PermissionRule
+from kagent.ui.interrupt import esc_watcher
+from kagent.ui.terminal import SYNC_PROMPT_ACTIVE
 
 if TYPE_CHECKING:
     from kagent.tools.base import Tool
@@ -111,10 +113,17 @@ class PermissionChecker:
 
         while True:
             try:
+                # Flag cho SIGINT handler biết đang block trong sync input();
+                # pause ESC watcher để không giành stdin với input().
+                SYNC_PROMPT_ACTIVE[0] = True
+                esc_watcher.pause()
                 choice = input("    Allow? [y/n/always/never] ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print()
-                return False
+                return False  # Ctrl+C tại prompt = deny (turn cũng đã bị cancel)
+            finally:
+                esc_watcher.resume()
+                SYNC_PROMPT_ACTIVE[0] = False
 
             if choice in ("y", "yes"):
                 return True

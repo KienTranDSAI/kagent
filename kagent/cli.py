@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import sys
 
 from kagent.config import (
@@ -28,7 +29,15 @@ from kagent.commands import (
     create_default_registry as create_command_registry,
     parse_slash,
 )
-from kagent.ui.terminal import console, print_welcome, print_error, print_info, get_prompt_label
+from kagent.ui.terminal import (
+    console,
+    print_welcome,
+    print_error,
+    print_info,
+    get_prompt_label,
+    SYNC_PROMPT_ACTIVE,
+)
+from kagent.ui.interrupt import esc_watcher
 
 
 def create_provider():
@@ -67,6 +76,39 @@ def parse_resume_id() -> str | None:
         if arg.startswith("--resume="):
             return arg.split("=", 1)[1]
     return None
+
+
+def sigint_decision(turn_running: bool, prompt_active: bool) -> str:
+    """Quyết định hành vi Ctrl+C — pure function để test được.
+
+    - idle (đang gõ REPL prompt)       → "raise"        (thoát như cũ)
+    - turn đang chạy                    → "cancel"       (hủy turn, REPL sống)
+    - turn chạy + đang ở sync prompt   → "cancel+raise" (cancel + phá input())
+    """
+    if turn_running:
+        return "cancel+raise" if prompt_active else "cancel"
+    return "raise"
+
+
+def install_sigint_handler(turn_task_ref: list) -> None:
+    """Thay default SIGINT handler.
+
+    Dùng signal.signal (KHÔNG dùng loop.add_signal_handler): callback của
+    loop chỉ chạy khi loop quay, mà REPL/permission prompt block loop bằng
+    sync input(). signal.signal handler chạy giữa các bytecode trong main
+    thread — task.cancel() ở đây an toàn (chỉ schedule, không chạy ngay).
+    """
+
+    def handler(signum, frame):
+        task = turn_task_ref[0]
+        running = task is not None and not task.done()
+        action = sigint_decision(running, SYNC_PROMPT_ACTIVE[0])
+        if action in ("cancel", "cancel+raise"):
+            task.cancel()
+        if action in ("raise", "cancel+raise"):
+            raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handler)
 
 
 def _print_retry(attempt: int, max_retries: int, exc: BaseException, delay: float) -> None:
@@ -131,7 +173,12 @@ async def main():
         cwd=os.getcwd(),
         perm_mode=perm_mode.value,
     )
-    console.print(f"[dim]Session: {session_id_ref[0]}  |  type /help for commands[/]\n")
+    console.print(
+        f"[dim]Session: {session_id_ref[0]}  |  /help for commands  |  ESC/Ctrl+C: hủy turn[/]\n"
+    )
+
+    turn_task_ref: list = [None]
+    install_sigint_handler(turn_task_ref)
 
     while True:
         try:
@@ -166,16 +213,19 @@ async def main():
 
         messages.append({"role": "user", "content": stripped})
 
+        turn_task = asyncio.ensure_future(agent_loop(
+            messages=messages,
+            provider=provider,
+            registry=tool_registry,
+            permission_checker=permission_checker,
+            cost_tracker=cost_tracker,
+            model=model,
+            context_tracker=context_tracker,
+        ))
+        turn_task_ref[0] = turn_task
+        esc_watcher.start(turn_task.cancel)
         try:
-            response_text = await agent_loop(
-                messages=messages,
-                provider=provider,
-                registry=tool_registry,
-                permission_checker=permission_checker,
-                cost_tracker=cost_tracker,
-                model=model,
-                context_tracker=context_tracker,
-            )
+            response_text = await turn_task
             messages.append({"role": "assistant", "content": response_text})
             save_session(
                 session_id_ref[0],
@@ -183,10 +233,20 @@ async def main():
                 metadata={"model": model, "provider": LLM_PROVIDER},
             )
             console.print()
+        except asyncio.CancelledError:
+            console.print("\n[yellow]⏹ Interrupted.[/]\n")
+            save_session(  # giữ partial conversation (engine đã seal hợp lệ)
+                session_id_ref[0],
+                messages,
+                metadata={"model": model, "provider": LLM_PROVIDER},
+            )
         except Exception as e:
             print_error(str(e))
             if messages and messages[-1].get("role") == "user":
                 messages.pop()
+        finally:
+            esc_watcher.stop()
+            turn_task_ref[0] = None
 
 
 def main_sync() -> None:
