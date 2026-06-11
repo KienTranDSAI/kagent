@@ -3,6 +3,7 @@ import base64
 from google import genai
 from google.genai import types
 from kagent.providers.base import LLMProvider, LLMResponse, ToolCall, Usage
+from kagent.providers.retry import with_retries, stream_with_retries
 from kagent.tools.base import ToolResult
 
 
@@ -29,11 +30,13 @@ class GeminiProvider(LLMProvider):
         if tools:
             config.tools = self.format_tools(tools)
 
-        response = self.client.models.generate_content(
+        # client.aio = async mirror của google-genai SDK — sync client sẽ
+        # block event loop (cancellation/ESC watcher không chạy được).
+        response = await with_retries(lambda: self.client.aio.models.generate_content(
             model=self.model,
             contents=contents,
             config=config,
-        )
+        ))
 
         # Parse text — skip thought summary parts (Gemini 3 thinking model)
         text = None
@@ -76,6 +79,8 @@ class GeminiProvider(LLMProvider):
         - {"type": "text", "delta": str} — token text chunk
         - {"type": "tool_call", "call": ToolCall} — function call
         - {"type": "usage", "input_tokens": int, "output_tokens": int} — emit 1 lần ở cuối
+
+        Retry chỉ áp dụng TRƯỚC first event (sau đó text đã ra màn hình).
         """
         contents = self.format_messages(messages)
         config = types.GenerateContentConfig(
@@ -84,13 +89,19 @@ class GeminiProvider(LLMProvider):
         if tools:
             config.tools = self.format_tools(tools)
 
+        async for event in stream_with_retries(lambda: self._stream_once(contents, config)):
+            yield event
+
+    async def _stream_once(self, contents, config):
+        """1 lần stream thật — stream_with_retries gọi lại khi attempt mới."""
         last_usage = None
         last_finish_reason = None
-        for chunk in self.client.models.generate_content_stream(
+        stream = await self.client.aio.models.generate_content_stream(
             model=self.model,
             contents=contents,
             config=config,
-        ):
+        )
+        async for chunk in stream:
             if chunk.usage_metadata:
                 last_usage = chunk.usage_metadata
             if not chunk.candidates:

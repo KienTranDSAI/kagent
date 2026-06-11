@@ -14,6 +14,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from kagent.providers.base import LLMProvider, LLMResponse, ToolCall, Usage
+from kagent.providers.retry import with_retries, stream_with_retries
 from kagent.tools.base import ToolResult
 
 
@@ -42,6 +43,7 @@ class OpenAIProvider(LLMProvider):
             api_key=api_key or "EMPTY",
             base_url=base_url,
             http_client=http_client,
+            max_retries=0,  # retry tự quản trong providers/retry.py — tắt kẻo retry chồng retry
         )
         self.model = model
 
@@ -61,7 +63,7 @@ class OpenAIProvider(LLMProvider):
         if tools:
             kwargs["tools"] = self.format_tools(tools)
 
-        resp = await self.client.chat.completions.create(**kwargs)
+        resp = await with_retries(lambda: self.client.chat.completions.create(**kwargs))
         msg = resp.choices[0].message
 
         text = msg.content or None
@@ -90,6 +92,8 @@ class OpenAIProvider(LLMProvider):
         - {"type": "tool_call", "call": ToolCall}  — emit AFTER full args collected
         - {"type": "finish", "reason": str}
         - {"type": "usage", "input_tokens": int, "output_tokens": int}
+
+        Retry chỉ áp dụng TRƯỚC first event (sau đó text đã ra màn hình).
         """
         api_messages = self._build_messages(messages, system_prompt)
         kwargs: dict = {
@@ -101,6 +105,11 @@ class OpenAIProvider(LLMProvider):
         if tools:
             kwargs["tools"] = self.format_tools(tools)
 
+        async for event in stream_with_retries(lambda: self._stream_once(kwargs)):
+            yield event
+
+    async def _stream_once(self, kwargs: dict):
+        """1 lần stream thật — stream_with_retries gọi lại khi attempt mới."""
         # Tool call args stream in chunks — accumulate by index then emit
         tc_acc: dict[int, dict] = {}
         last_finish_reason: str | None = None

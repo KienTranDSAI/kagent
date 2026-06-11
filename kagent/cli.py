@@ -11,6 +11,7 @@ from kagent.config import (
 )
 from kagent.providers.gemini import GeminiProvider
 from kagent.providers.openai_compat import OpenAIProvider
+from kagent.providers.retry import set_retry_notifier
 from kagent.tools import create_default_registry as create_tool_registry
 from kagent.engine import agent_loop
 from kagent.permissions import PermissionChecker, PermissionMode
@@ -26,7 +27,7 @@ from kagent.commands import (
     create_default_registry as create_command_registry,
     parse_slash,
 )
-from kagent.ui.terminal import console, print_welcome, print_error, get_prompt_label
+from kagent.ui.terminal import console, print_welcome, print_error, print_info, get_prompt_label
 
 
 def create_provider():
@@ -67,7 +68,16 @@ def parse_resume_id() -> str | None:
     return None
 
 
+def _print_retry(attempt: int, max_retries: int, exc: BaseException, delay: float) -> None:
+    print_info(
+        f"  [retry {attempt + 1}/{max_retries}] {type(exc).__name__}: {exc} — chờ {delay:.1f}s"
+    )
+
+
 async def main():
+    # Composition root: inject UI callback cho retry layer (provider layer không import UI).
+    set_retry_notifier(_print_retry)
+
     provider = create_provider()
     model = get_model()
 
