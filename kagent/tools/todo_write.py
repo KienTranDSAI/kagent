@@ -118,6 +118,11 @@ class TodoWriteTool(Tool):
     def is_concurrency_safe(self) -> bool:
         return False
 
+    def needs_permission(self) -> bool:
+        # Chỉ mutate in-memory store — như Claude Code: "No permission
+        # checks required for todo operations".
+        return False
+
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         raw = args.get("todos", [])
         if not isinstance(raw, list):

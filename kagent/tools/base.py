@@ -120,14 +120,19 @@ class Tool(ABC):
         """
         return False
 
-    def check_permissions(self, args: dict) -> Optional[str]:
-        """Check if this tool call is allowed.
+    def needs_permission(self) -> bool:
+        """Does this tool require the permission system at all?
 
-        Returns:
-            None if allowed, or error message string if denied.
-        Default: None (allow all — actual checking in Phase 6)
+        Claude Code equivalent: per-tool checkPermissions() — TodoWriteTool
+        returns {behavior: 'allow'} unconditionally ("No permission checks
+        required for todo operations").
+
+        Tools returning False mutate only in-memory session state (no
+        filesystem, no shell) → auto-allowed in mọi mode trừ DENY.
+
+        Default: True (safe assumption — đi qua PermissionChecker).
         """
-        return None
+        return True
 
     def bypasses_spinner(self) -> bool:
         """Whether tool execution takes over the terminal (interactive prompts).
