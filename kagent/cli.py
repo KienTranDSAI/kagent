@@ -30,6 +30,7 @@ from kagent.commands import (
     create_default_registry as create_command_registry,
     parse_slash,
 )
+from kagent.commands.custom import load_custom_commands
 from kagent.ui.terminal import (
     console,
     print_welcome,
@@ -134,6 +135,11 @@ async def main():
         permission_checker=permission_checker,
     )
     cmd_registry = create_command_registry()
+    for custom in load_custom_commands():
+        if custom.name in cmd_registry:
+            print_info(f"  ⚠ /{custom.name} (custom) trùng builtin — bỏ qua")
+            continue
+        cmd_registry.register(custom)
 
     cost_tracker = CostTracker(model=model)
     context_tracker = ContextTracker()
@@ -195,6 +201,7 @@ async def main():
         if not stripped:
             continue
 
+        prompt_text: str | None = None
         parsed = parse_slash(stripped)
         if parsed is not None:
             name, args = parsed
@@ -208,13 +215,18 @@ async def main():
                 raise
             except Exception as e:
                 print_error(f"Command /{name} failed: {e}")
-            continue
+            # Custom command (hoặc builtin) muốn chạy 1 turn → set pending_prompt
+            prompt_text = cmd_ctx.pending_prompt[0]
+            cmd_ctx.pending_prompt[0] = None
+            if not prompt_text:
+                continue
+        else:
+            if stripped.lower() in ("exit", "quit"):
+                console.print("[dim]Bye![/]")
+                break
+            prompt_text = stripped
 
-        if stripped.lower() in ("exit", "quit"):
-            console.print("[dim]Bye![/]")
-            break
-
-        messages.append({"role": "user", "content": stripped})
+        messages.append({"role": "user", "content": prompt_text})
 
         turn_task = asyncio.ensure_future(agent_loop(
             messages=messages,

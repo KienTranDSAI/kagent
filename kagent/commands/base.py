@@ -4,7 +4,7 @@ Claude Code equivalent: src/commands.ts + src/commands/*.ts
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -28,6 +28,10 @@ class CommandContext:
     memory: object              # MemoryManager
     permission_checker: object = None  # PermissionChecker (cho /plan)
     context_tracker: object = None     # ContextTracker — real token count của main loop
+    # Command set prompt vào đây → REPL chạy 1 turn với prompt đó sau khi
+    # execute() return (list-of-1 ref trick như session_id_ref).
+    # Dùng bởi custom commands; builtin nào cần trigger turn cũng dùng được.
+    pending_prompt: list = field(default_factory=lambda: [None])
 
 
 class Command(ABC):
