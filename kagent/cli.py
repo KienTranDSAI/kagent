@@ -13,6 +13,7 @@ from kagent.config import (
 from kagent.providers.gemini import GeminiProvider
 from kagent.providers.openai_compat import OpenAIProvider
 from kagent.providers.retry import set_retry_notifier
+from kagent.settings import load_settings
 from kagent.tools import create_default_registry as create_tool_registry
 from kagent.engine import agent_loop
 from kagent.permissions import PermissionChecker, PermissionMode
@@ -121,11 +122,13 @@ async def main():
     # Composition root: inject UI callback cho retry layer (provider layer không import UI).
     set_retry_notifier(_print_retry)
 
+    settings = load_settings(on_warning=print_error)
+
     provider = create_provider()
     model = get_model()
 
     perm_mode = parse_permission_mode()
-    permission_checker = PermissionChecker(mode=perm_mode)
+    permission_checker = PermissionChecker(mode=perm_mode, settings=settings)
     tool_registry = create_tool_registry(
         provider=provider,
         permission_checker=permission_checker,

@@ -19,6 +19,7 @@ dist/
 
 # Local IDE / agent settings
 .claude/
+.kagent/
 
 # Personal files (not part of project)
 /*.pdf

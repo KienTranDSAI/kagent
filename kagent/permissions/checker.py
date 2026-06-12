@@ -1,6 +1,7 @@
-import fnmatch
 from typing import TYPE_CHECKING
-from kagent.permissions.types import PermissionMode, PermissionDecision, PermissionRule
+from kagent.permissions.types import PermissionMode, PermissionDecision
+from kagent.permissions.rules import rule_matches, derive_bash_prefix
+from kagent.settings import add_permission_rule
 from kagent.ui.diff_preview import show_permission_preview
 from kagent.ui.interrupt import esc_watcher
 from kagent.ui.terminal import SYNC_PROMPT_ACTIVE
@@ -36,24 +37,43 @@ class PermissionChecker:
     đều có thể switch mode trong runtime qua set_mode().
     """
 
-    def __init__(self, mode: PermissionMode = PermissionMode.DEFAULT):
+    def __init__(self, mode: PermissionMode = PermissionMode.DEFAULT,
+                 settings: dict | None = None):
         self.mode = mode
-        self.rules: list[PermissionRule] = []
-        self.session_allows: set[str] = set()  # "Bash:*", "Edit:*"
+        perms = (settings or {}).get("permissions") or {}
+        # Rule strings (cú pháp xem permissions/rules.py) — load từ settings,
+        # prompt_user append runtime khi user chọn always/never
+        self.allow_rules: list[str] = list(perms.get("allow") or [])
+        self.deny_rules: list[str] = list(perms.get("deny") or [])
 
     def set_mode(self, mode: PermissionMode) -> None:
         """Switch runtime mode. Dùng bởi Enter/ExitPlanMode + /plan."""
         self.mode = mode
 
     def check(self, tool: "Tool", args: dict) -> PermissionDecision:
-        """Check if tool execution is allowed."""
-        # Auto mode → allow everything
+        """Check if tool execution is allowed.
+
+        Thứ tự: deny rules (thắng TẤT CẢ, kể cả --auto — giống Claude Code
+        bypassPermissions vẫn tôn trọng deny) → mode shortcuts → read-only
+        auto-allow → allow rules → ask.
+        """
+        for rule in self.deny_rules:
+            if rule_matches(rule, tool.name, args):
+                return PermissionDecision.DENY
+
+        # Auto mode → allow everything (trừ deny rules ở trên)
         if self.mode == PermissionMode.AUTO:
             return PermissionDecision.ALLOW
 
         # Deny mode → deny everything
         if self.mode == PermissionMode.DENY:
             return PermissionDecision.DENY
+
+        # Tool tự khai không cần permission (vd TodoWrite — chỉ mutate
+        # in-memory state) → allow, kể cả trong plan mode. Giống Claude Code:
+        # TodoWriteTool.checkPermissions luôn trả allow.
+        if not tool.needs_permission():
+            return PermissionDecision.ALLOW
 
         # Plan mode → chỉ cho read-only + tool điều khiển plan; còn lại silent-deny.
         if self.mode == PermissionMode.PLAN:
@@ -81,17 +101,10 @@ class PermissionChecker:
             if self._is_read_only_command(command):
                 return PermissionDecision.ALLOW
 
-        # Check session allows
-        tool_key = self._make_key(tool.name, args)
-        for pattern in self.session_allows:
-            if fnmatch.fnmatch(tool_key, pattern):
+        # Allow rules từ settings + runtime "always"
+        for rule in self.allow_rules:
+            if rule_matches(rule, tool.name, args):
                 return PermissionDecision.ALLOW
-
-        # Check persistent rules
-        for rule in self.rules:
-            if rule.tool == tool.name:
-                if fnmatch.fnmatch(tool_key, f"{rule.tool}:{rule.pattern}"):
-                    return rule.decision
 
         # Default: ask
         return PermissionDecision.ASK
@@ -133,19 +146,20 @@ class PermissionChecker:
                 return True
             elif choice in ("n", "no"):
                 return False
-            elif choice == "always":
-                key = f"{tool.name}:*"
-                self.session_allows.add(key)
-                print(f"    ✓ {tool.name} always allowed for this session")
+            elif choice in ("a", "always"):
+                rule = self._derive_rule(tool.name, args)
+                self.allow_rules.append(rule)
+                path = add_permission_rule(rule, "allow", "local")
+                print(f"    ✓ Allowed + saved: {rule} → {path.name}")
                 return True
             elif choice == "never":
-                self.rules.append(PermissionRule(
-                    tool=tool.name, pattern="*",
-                    decision=PermissionDecision.DENY,
-                ))
+                rule = self._derive_rule(tool.name, args)
+                self.deny_rules.append(rule)
+                path = add_permission_rule(rule, "deny", "local")
+                print(f"    ✗ Denied + saved: {rule} → {path.name}")
                 return False
             else:
-                print("    Please enter y, n, always, or never")
+                print("    Please enter y, n, a(lways), or never")
 
     def _is_read_only_command(self, command: str) -> bool:
         """Check if a Bash command is read-only."""
@@ -155,10 +169,8 @@ class PermissionChecker:
                 return True
         return False
 
-    def _make_key(self, tool_name: str, args: dict) -> str:
-        """Create a key for pattern matching."""
+    def _derive_rule(self, tool_name: str, args: dict) -> str:
+        """Rule persist khi always/never: Bash → prefix 1-2 từ; tool khác → cả tool."""
         if tool_name == "Bash":
-            return f"Bash:{args.get('command', '')}"
-        elif tool_name in ("Edit", "Write", "Read"):
-            return f"{tool_name}:{args.get('file_path', '')}"
-        return f"{tool_name}:*"
+            return f"Bash({derive_bash_prefix(args.get('command', ''))})"
+        return tool_name
