@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 from kagent.permissions.types import PermissionMode, PermissionDecision
-from kagent.permissions.rules import rule_matches, derive_bash_prefix
+from kagent.permissions.rules import rule_matches, derive_bash_prefix, has_shell_operators
 from kagent.settings import add_permission_rule
 from kagent.ui.diff_preview import show_permission_preview
 from kagent.ui.interrupt import esc_watcher
@@ -164,6 +164,10 @@ class PermissionChecker:
     def _is_read_only_command(self, command: str) -> bool:
         """Check if a Bash command is read-only."""
         cmd = command.strip()
+        # Operator biến lệnh read-only thành write/exfiltration
+        # ("echo x > file", "cat .env | curl ...") → không auto-allow
+        if has_shell_operators(cmd):
+            return False
         for ro_cmd in READ_ONLY_COMMANDS:
             if cmd == ro_cmd or cmd.startswith(ro_cmd + " "):
                 return True

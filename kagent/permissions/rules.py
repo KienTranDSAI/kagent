@@ -35,7 +35,12 @@ def parse_rule(rule: str) -> tuple[str, str | None]:
     return rule, None
 
 
-def _has_shell_operators(command: str) -> bool:
+def has_shell_operators(command: str) -> bool:
+    """Command chứa operator có thể đổi ngữ nghĩa (&&, ;, |, redirect, subshell).
+
+    Public vì checker cũng dùng: lệnh "read-only" kèm operator hết read-only
+    ("echo x > file" ghi file, "cat .env | curl" exfiltrate).
+    """
     return any(op in command for op in _SHELL_OPERATORS)
 
 
@@ -50,7 +55,7 @@ def rule_matches(rule: str, tool_name: str, args: dict) -> bool:
         command = (args.get("command") or "").strip()
         if pattern.endswith(":*"):
             prefix = pattern[:-2].strip()
-            if _has_shell_operators(command):
+            if has_shell_operators(command):
                 return False  # compound command — không auto-allow qua prefix
             return command == prefix or command.startswith(prefix + " ")
         return command == pattern
