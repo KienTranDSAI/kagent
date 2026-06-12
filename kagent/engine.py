@@ -15,6 +15,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
+from kagent.hooks.runner import HookRunner, blocked_feedback
 from kagent.providers.base import LLMProvider, ToolCall
 from kagent.tools.base import Tool, ToolContext, ToolResult
 from kagent.tools.registry import ToolRegistry
@@ -68,6 +69,7 @@ async def agent_loop(
     cost_tracker: CostTracker | None = None,
     model: str | None = None,
     context_tracker: ContextTracker | None = None,
+    hooks: HookRunner | None = None,
 ) -> str:
     """Core agentic loop: streaming UI + auto-compact + cost tracking + parallel tools."""
     if system_prompt is None:
@@ -163,11 +165,12 @@ async def agent_loop(
             messages.append(assistant_msg)
 
             # Execute all tool_calls (batched parallel) then append results
-            results = await _execute_tool_calls(
+            results, post_feedback = await _execute_tool_calls(
                 tool_calls=tool_calls,
                 registry=registry,
                 context=context,
                 permission_checker=permission_checker,
+                hooks=hooks,
             )
             for tc, result in zip(tool_calls, results):
                 formatted = provider.format_tool_result(tc, result)
@@ -175,6 +178,11 @@ async def agent_loop(
                     messages.extend(formatted)
                 else:
                     messages.append(formatted)
+
+            # PostToolUse feedback → 1 user message riêng (không nhét vào
+            # tool result — giữ nguyên ToolResult cho multimodal flow)
+            if post_feedback:
+                messages.append({"role": "user", "content": "\n\n".join(post_feedback)})
 
             # Text của iteration này đã nằm trong assistant_msg["text"] —
             # xóa để cancel trong auto-compact đầu iteration sau không seal trùng.
@@ -228,12 +236,16 @@ async def _execute_tool_calls(
     registry: ToolRegistry,
     context: ToolContext,
     permission_checker: PermissionChecker | None,
-) -> list:
+    hooks: HookRunner | None = None,
+) -> tuple[list, list[str]]:
     """Execute tool_calls với batch partitioning.
 
-    Returns list of ToolResult (success) or string (error/deny),
-    same length and order as tool_calls. Mixed types intentional —
-    provider.format_tool_result accepts both.
+    Returns (results, post_feedback):
+    - results: ToolResult (success) hoặc str (error/deny/blocked), cùng độ dài
+      và thứ tự với tool_calls. Mixed types intentional —
+      provider.format_tool_result nhận cả 2.
+    - post_feedback: feedback từ PostToolUse hooks exit 2 (caller append
+      thành user message riêng).
     """
     n = len(tool_calls)
     results: list = [None] * n
@@ -248,6 +260,19 @@ async def _execute_tool_calls(
             results[i] = f"Error: Unknown tool '{tc.name}'"
             allowed[i] = False
             continue
+        # PreToolUse hook — chạy TRƯỚC permission check; exit 2 = block
+        if hooks is not None:
+            pre = await hooks.run(
+                "PreToolUse", tool_name=tc.name,
+                extra={"tool_name": tc.name, "tool_input": tc.args},
+            )
+            feedback = blocked_feedback(pre)
+            if feedback:
+                print_tool_call(tc.name, tc.args)
+                print_tool_error(f"PreToolUse hook blocked: {feedback}")
+                results[i] = f"PreToolUse hook blocked this tool call:\n{feedback}"
+                allowed[i] = False
+                continue
         if permission_checker:
             decision = permission_checker.check(tool, tc.args)
             if decision == PermissionDecision.DENY:
@@ -276,8 +301,26 @@ async def _execute_tool_calls(
         else:
             await _run_parallel(batch, tool_calls, tools, context, results)
 
+    # PostToolUse hooks — sau khi tool đã chạy; exit 2 → feedback cho model
+    post_feedback: list[str] = []
+    if hooks is not None:
+        for i, (tc, tool) in enumerate(zip(tool_calls, tools)):
+            if not allowed[i] or tool is None:
+                continue
+            post = await hooks.run(
+                "PostToolUse", tool_name=tc.name,
+                extra={
+                    "tool_name": tc.name,
+                    "tool_input": tc.args,
+                    "tool_output": str(results[i])[:4000],
+                },
+            )
+            fb = blocked_feedback(post)
+            if fb:
+                post_feedback.append(f"[PostToolUse hook — {tc.name}]\n{fb}")
+
     # Fill any None with empty string (shouldn't happen)
-    return [r if r is not None else "" for r in results]
+    return [r if r is not None else "" for r in results], post_feedback
 
 
 def _partition_batches(

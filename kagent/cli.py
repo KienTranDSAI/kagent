@@ -16,6 +16,7 @@ from kagent.providers.retry import set_retry_notifier
 from kagent.settings import load_settings
 from kagent.tools import create_default_registry as create_tool_registry
 from kagent.engine import agent_loop
+from kagent.hooks.runner import HookRunner, blocked_feedback
 from kagent.permissions import PermissionChecker, PermissionMode
 from kagent.conversation import (
     CostTracker,
@@ -40,6 +41,11 @@ from kagent.ui.terminal import (
     SYNC_PROMPT_ACTIVE,
 )
 from kagent.ui.interrupt import esc_watcher
+
+# Stop hook có thể yêu cầu model làm tiếp (exit 2) — cap số lần continuation
+# để hook lỗi không tạo vòng lặp vô hạn (payload có stop_hook_active để hook
+# tự biết đang trong continuation).
+MAX_STOP_CONTINUES = 3
 
 
 def create_provider():
@@ -162,6 +168,13 @@ async def main():
 
     session_id_ref = [session_id]
 
+    hook_runner = HookRunner(
+        settings,
+        cwd=os.getcwd(),
+        session_id_ref=session_id_ref,
+        notifier=print_info,  # composition root inject UI — runner không import ui
+    )
+
     cmd_ctx = CommandContext(
         messages=messages,
         session_id_ref=session_id_ref,
@@ -228,20 +241,45 @@ async def main():
 
         messages.append({"role": "user", "content": prompt_text})
 
-        turn_task = asyncio.ensure_future(agent_loop(
-            messages=messages,
-            provider=provider,
-            registry=tool_registry,
-            permission_checker=permission_checker,
-            cost_tracker=cost_tracker,
-            model=cmd_ctx.model,  # /model có thể đã đổi — cmd_ctx là source of truth
-            context_tracker=context_tracker,
-        ))
-        turn_task_ref[0] = turn_task
-        esc_watcher.start(turn_task.cancel)
+        async def _run_turn() -> str:
+            # stop() trước start(): EscWatcher.start() là no-op khi đang active
+            # → turn continuation (Stop hook) phải rebind on_esc sang task MỚI.
+            esc_watcher.stop()
+            task = asyncio.ensure_future(agent_loop(
+                messages=messages,
+                provider=provider,
+                registry=tool_registry,
+                permission_checker=permission_checker,
+                cost_tracker=cost_tracker,
+                model=cmd_ctx.model,  # /model có thể đã đổi — cmd_ctx là source of truth
+                context_tracker=context_tracker,
+                hooks=hook_runner,
+            ))
+            turn_task_ref[0] = task
+            esc_watcher.start(task.cancel)
+            return await task
+
         try:
-            response_text = await turn_task
+            response_text = await _run_turn()
             messages.append({"role": "assistant", "content": response_text})
+
+            # Stop hooks — exit 2 → stderr thành user message, model làm tiếp
+            for n in range(MAX_STOP_CONTINUES):
+                stop_results = await hook_runner.run("Stop", extra={
+                    "last_response": (response_text or "")[:4000],
+                    "stop_hook_active": n > 0,
+                })
+                feedback = blocked_feedback(stop_results)
+                if not feedback:
+                    break
+                console.print(f"[yellow][Stop hook][/] tiếp tục turn: {feedback[:300]}")
+                messages.append({
+                    "role": "user",
+                    "content": f"[Stop hook feedback]\n{feedback}",
+                })
+                response_text = await _run_turn()
+                messages.append({"role": "assistant", "content": response_text})
+
             save_session(
                 session_id_ref[0],
                 messages,
